@@ -75,7 +75,7 @@ Drag the two sliders, click any of the four optimiser buttons, or add your own l
 
 Urban Circular Hack Helsinki 2025 (U!REKA European University hackathon), HXRC Arabia Campus, 24–25 November 2025. Partners: Metropolia UAS, City of Helsinki, City of Espoo, City of Vantaa, Helsinki-Uusimaa Regional Council.
 
-**Team 7:** Robert Winiarczyk, Dimitrios Pontikakis Batana, Ailikuti Tayier.
+**Team 7:** Sou Komiya, Robert Winiarczyk, Dimitrios Pontikakis Batana, Ailikuti Tayier.
 
 ## Sources
 
