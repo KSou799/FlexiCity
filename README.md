@@ -1,5 +1,7 @@
 # FlexiCity
 
+[![tests](https://github.com/KSou799/FlexiCity/actions/workflows/tests.yml/badge.svg)](https://github.com/KSou799/FlexiCity/actions/workflows/tests.yml)
+
 A 24-hour electricity load-shifting simulator. It models 24 flexible city loads, such as EV charging, heat pumps, HVAC and refrigeration, and moves the shiftable part of each one into hours with spare grid capacity and lower prices. At default settings it lowers the daily peak of the modelled city by 9.2% and the daily electricity cost of the flexible loads by 11.3%.
 
 ![FlexiCity dashboard](screenshots/01-overview.png)
@@ -157,4 +159,4 @@ Peak electricity consumption in Espoo rose 46% from January 2023 to January 2024
 - Nord Pool spot prices, Helen website, November 2025.
 - Fingrid data for the hourly CO₂ intensity profile.
 
-MIT license.
+[MIT license](LICENSE).
