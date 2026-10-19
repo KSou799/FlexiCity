@@ -134,6 +134,8 @@ python benchmark_milp.py
 
 ## Changes since the hackathon
 
+The code was first uploaded to GitHub on 1 March 2026, so the commit history starts then, not at the hackathon in November 2025.
+
 - Split the model out of the GUI into `flexicity_model.py`, so it can be tested and benchmarked without opening a window. The optimisers now call the model directly instead of moving the sliders 10,201 times.
 - The scheduler repeats the placement until no load moves.
 - Heat pumps may pre-heat from 02:00. Before, their window was exactly as long as their run time, so they could never move and their flexibility factor did nothing.
