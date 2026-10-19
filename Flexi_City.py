@@ -1,7 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import math
-import copy
+
+from flexicity_model import (
+    NUM_HOURS, PRICE_PER_HOUR,
+    default_assets, validate_asset, simulate, optimise,
+)
 
 # ========================================
 # FLEXI CITY - SMART ELECTRICITY LOAD SHIFTING SIMULATOR
@@ -11,245 +15,32 @@ import copy
 #
 # WHAT THIS DOES
 #   Simulates a city of 24 flexible electricity loads (EVs, heat pumps,
-#   HVAC, fridges, chargers, etc.) and compares two scheduling strategies:
-#     BEFORE  Each load runs from the earliest hour of its allowed window
+#   HVAC, fridges, chargers, etc.) and compares two schedules:
+#     BEFORE  Each load runs from its usual start hour
 #             (no coordination - "plug in when I get home" behaviour)
-#     AFTER   Each load is shifted to hours that minimize a weighted
-#             combination of grid load and electricity price
-#   Reports peak demand, daily cost, and CO2 emissions for both.
+#     AFTER   The shiftable part of each load is moved to hours with a low
+#             weighted combination of grid load and electricity price
+#   Reports peak demand, daily cost and CO2 emissions for both.
+#
+# The model itself is in flexicity_model.py. This file is the tkinter app.
 #
 # OPTIMIZER
-#   - Exhaustive 1% grid search over (flex%, priority%)
-#   - Four objectives: peak, cost, CO2, multi-objective (equal-weighted)
-#
-# MODELLING ASSUMPTIONS
-#   - Shifting an asset inside its window does not violate operational
-#     or thermal constraints
-#   - "No coordination" baseline = start at window opening
-#   - CO2 profile reflects Nordic grid mix (renewables + thermal backup)
-#   - No inter-day or inter-asset dependencies
+#   - Exhaustive 1% grid search over (flex%, priority%), 10,201 schedules
+#   - Four objectives: peak, cost, CO2, all three (none may get worse)
 
-NUM_HOURS = 24
+ASSETS = default_assets()
 
-# Nordic spot price proxy, cents/kWh, hour-by-hour
-PRICE_PER_HOUR = [
-    8.70, 8.48, 8.52, 8.61, 8.69, 8.69,
-    9.56, 11.58, 12.72, 13.07, 15.65, 17.65,
-    16.24, 15.55, 15.12, 16.64, 18.60, 21.53,
-    22.68, 20.29, 17.09, 14.09, 12.81, 11.63
-]
-
-
-def generate_base_load(num_hours=NUM_HOURS):
-    base = []
-    for h in range(num_hours):
-        val = 40.0
-        if 7 <= h <= 9:
-            val += 25.0
-        if 17 <= h <= 21:
-            val += 35.0
-        base.append(val)
-    return base
-
-
-# Lower midday (solar), higher evening (peak fossil fuels), kg/kWh
-CO2_PER_HOUR = [
-    0.110, 0.105, 0.100, 0.095, 0.090, 0.085,
-    0.080, 0.075, 0.065, 0.055, 0.045, 0.040,
-    0.038, 0.035, 0.040, 0.050, 0.065, 0.085,
-    0.110, 0.125, 0.120, 0.115, 0.115, 0.112,
-]
-
-BASE_LOAD = generate_base_load()
-
-ASSETS = [
-    {"owner": "City EV fleet",        "appliance": "Fast chargers",         "power_kW": 80.0, "duration_h": 4, "start_hour": 17, "end_hour": 7,  "variable": True,  "enabled": True, "flex_factor": 0.95},
-    {"owner": "Office block A",       "appliance": "HVAC pre-cooling",      "power_kW": 30.0, "duration_h": 3, "start_hour": 14, "end_hour": 22, "variable": True,  "enabled": True, "flex_factor": 0.90},
-    {"owner": "Supermarket",          "appliance": "Fridge defrost cycles", "power_kW": 20.0, "duration_h": 4, "start_hour": 0,  "end_hour": 24, "variable": False, "enabled": True, "flex_factor": 0.60},
-    {"owner": "Residential block",    "appliance": "EV chargers",           "power_kW": 40.0, "duration_h": 6, "start_hour": 18, "end_hour": 7,  "variable": True,  "enabled": True, "flex_factor": 0.90},
-    {"owner": "Apartment block 1",    "appliance": "Heat pumps",            "power_kW": 25.0, "duration_h": 5, "start_hour": 5,  "end_hour": 10, "variable": True,  "enabled": True, "flex_factor": 0.80},
-    {"owner": "Apartment block 2",    "appliance": "Heat pumps",            "power_kW": 30.0, "duration_h": 5, "start_hour": 5,  "end_hour": 10, "variable": True,  "enabled": True, "flex_factor": 0.80},
-    {"owner": "Tram depot",           "appliance": "Night chargers",        "power_kW": 60.0, "duration_h": 3, "start_hour": 0,  "end_hour": 6,  "variable": True,  "enabled": True, "flex_factor": 0.85},
-    {"owner": "Metro station",        "appliance": "Ventilation",           "power_kW": 35.0, "duration_h": 4, "start_hour": 10, "end_hour": 22, "variable": True,  "enabled": True, "flex_factor": 0.85},
-    {"owner": "Data center X",        "appliance": "Battery charging",      "power_kW": 70.0, "duration_h": 5, "start_hour": 0,  "end_hour": 24, "variable": True,  "enabled": True, "flex_factor": 1.0},
-    {"owner": "Public swimming pool", "appliance": "Water heating",         "power_kW": 20.0, "duration_h": 4, "start_hour": 6,  "end_hour": 12, "variable": True,  "enabled": True, "flex_factor": 0.75},
-    {"owner": "School A",             "appliance": "Ventilation",           "power_kW": 15.0, "duration_h": 3, "start_hour": 7,  "end_hour": 15, "variable": True,  "enabled": True, "flex_factor": 0.80},
-    {"owner": "School B",             "appliance": "Ventilation",           "power_kW": 15.0, "duration_h": 3, "start_hour": 7,  "end_hour": 15, "variable": True,  "enabled": True, "flex_factor": 0.80},
-    {"owner": "City hospital",        "appliance": "Laundry machines",      "power_kW": 25.0, "duration_h": 4, "start_hour": 8,  "end_hour": 18, "variable": False, "enabled": True, "flex_factor": 0.70},
-    {"owner": "Bakery",               "appliance": "Oven preheat",          "power_kW": 10.0, "duration_h": 2, "start_hour": 3,  "end_hour": 7,  "variable": False, "enabled": True, "flex_factor": 0.50},
-    {"owner": "Street lighting",      "appliance": "Early dimming",         "power_kW": 10.0, "duration_h": 4, "start_hour": 18, "end_hour": 24, "variable": True,  "enabled": True, "flex_factor": 1.0},
-    {"owner": "Downtown chargers",    "appliance": "Public EV charging",    "power_kW": 50.0, "duration_h": 5, "start_hour": 17, "end_hour": 7,  "variable": True,  "enabled": True, "flex_factor": 0.85},
-    {"owner": "University labs",      "appliance": "Freezer defrost",       "power_kW": 8.0,  "duration_h": 3, "start_hour": 1,  "end_hour": 7,  "variable": False, "enabled": True, "flex_factor": 0.55},
-    {"owner": "Logistics warehouse",  "appliance": "Pre-chill cooling",     "power_kW": 22.0, "duration_h": 4, "start_hour": 12, "end_hour": 22, "variable": True,  "enabled": True, "flex_factor": 0.85},
-    {"owner": "Office block B",       "appliance": "Server backup charging","power_kW": 18.0, "duration_h": 3, "start_hour": 0,  "end_hour": 8,  "variable": True,  "enabled": True, "flex_factor": 1.0},
-    {"owner": "City gym",             "appliance": "Sauna heaters",         "power_kW": 12.0, "duration_h": 3, "start_hour": 15, "end_hour": 22, "variable": False, "enabled": True, "flex_factor": 0.65},
-    {"owner": "Central library",      "appliance": "HVAC",                  "power_kW": 10.0, "duration_h": 4, "start_hour": 8,  "end_hour": 22, "variable": True,  "enabled": True, "flex_factor": 0.85},
-    {"owner": "Small shops",          "appliance": "Refrigeration",         "power_kW": 18.0, "duration_h": 6, "start_hour": 8,  "end_hour": 23, "variable": True,  "enabled": True, "flex_factor": 0.65},
-    {"owner": "Residential solar",    "appliance": "Battery charging",      "power_kW": 15.0, "duration_h": 5, "start_hour": 10, "end_hour": 22, "variable": True,  "enabled": True, "flex_factor": 1.0},
-    {"owner": "Electric bus depot",   "appliance": "Overnight charging",    "power_kW": 90.0, "duration_h": 6, "start_hour": 22, "end_hour": 8,  "variable": True,  "enabled": True, "flex_factor": 0.95},
-]
-
-for a in ASSETS:
-    a.setdefault("flex_factor", 1.0)
-    a["before_hours"] = []
-    a["after_hours"] = []
-
-DEFAULT_ASSETS = copy.deepcopy(ASSETS)
-
-before_load = BASE_LOAD[:]
-after_load = BASE_LOAD[:]
-cost_before_flex = 0.0
-cost_after_flex = 0.0
-
-
-def clamp(val, lo, hi):
-    return max(lo, min(hi, val))
-
-
-def get_window_hours(start_hour, end_hour):
-    sh = int(start_hour)
-    eh = int(end_hour)
-    if sh < eh:
-        return list(range(sh, eh))
-    return list(range(sh, NUM_HOURS)) + list(range(0, eh))
-
-
-def _asset_window(asset):
-    sh = clamp(asset["start_hour"], 0, NUM_HOURS - 1)
-    eh = clamp(asset["end_hour"], 0, NUM_HOURS)
-    if sh == eh:
-        return []
-    return get_window_hours(sh, eh)
+result = simulate(ASSETS, 1.0, 0.5)
+before_load = result.before_load
+after_load = result.after_load
 
 
 def recalculate_schedules():
-    """
-    Build BEFORE (naive) and AFTER (smart) load curves and costs.
-
-    BEFORE: every asset runs at the first 'duration_h' hours of its window.
-    AFTER:  each asset's participating power (= full_power * participation
-            * flex_factor) is moved to the hours with the lowest score,
-            where score = grid_weight * normalized_load
-                        + price_weight * normalized_price.
-    Assets are processed largest-first so big loads place into the
-    least-stressed hours; subsequent assets re-score against the updated
-    after_load, so they don't pile on top of each other.
-    """
-    global before_load, after_load, cost_before_flex, cost_after_flex
-
-    participation = flex_var.get() / 100.0
-    priority_val = priority_var.get() / 100.0
-    price_weight = priority_val
-    grid_weight = 1.0 - priority_val
-
-    for a in ASSETS:
-        a["before_hours"] = []
-        a["after_hours"] = []
-
-    # ---- BEFORE: naive schedule ----
-    before_load = BASE_LOAD[:]
-    for asset in ASSETS:
-        if not asset.get("enabled", True):
-            continue
-        window_hours = _asset_window(asset)
-        if not window_hours:
-            continue
-        power_full = asset["power_kW"]
-        if power_full <= 0:
-            continue
-        duration = int(clamp(asset["duration_h"], 1, len(window_hours)))
-        hours_used = window_hours[:duration]
-        for h in hours_used:
-            before_load[h] += power_full
-        asset["before_hours"] = hours_used
-
-    cost_before_flex = 0.0
-    for asset in ASSETS:
-        if not asset.get("enabled", True):
-            continue
-        for h in asset["before_hours"]:
-            cost_before_flex += asset["power_kW"] * PRICE_PER_HOUR[h]
-
-    # ---- AFTER: smart schedule ----
-    after_load = before_load[:]
-
-    for asset in sorted(
-        [a for a in ASSETS if a.get("enabled", True)],
-        key=lambda a: -a["power_kW"]
-    ):
-        power_full = asset["power_kW"]
-        if power_full <= 0:
-            continue
-
-        flex_factor = asset.get("flex_factor", 1.0)
-        participating_power = power_full * participation * flex_factor
-
-        if participation <= 0 or not asset["before_hours"]:
-            asset["after_hours"] = asset["before_hours"][:]
-            continue
-
-        window_hours = _asset_window(asset)
-        if not window_hours:
-            asset["after_hours"] = asset["before_hours"][:]
-            continue
-
-        duration = int(clamp(asset["duration_h"], 1, len(window_hours)))
-
-        # remove the participating portion from naive hours
-        for h in asset["before_hours"]:
-            after_load[h] -= participating_power
-
-        # score each hour in the window
-        window_loads = [after_load[hh] for hh in window_hours]
-        min_load, max_load = min(window_loads), max(window_loads)
-        window_prices = [PRICE_PER_HOUR[hh] for hh in window_hours]
-        min_price, max_price = min(window_prices), max(window_prices)
-
-        hour_score = {}
-        for hh in window_hours:
-            load_norm = (after_load[hh] - min_load) / (max_load - min_load) if max_load > min_load else 0.0
-            price_norm = (PRICE_PER_HOUR[hh] - min_price) / (max_price - min_price) if max_price > min_price else 0.0
-            hour_score[hh] = grid_weight * load_norm + price_weight * price_norm
-
-        chosen_hours = []
-        if asset.get("variable", True):
-            available = window_hours.copy()
-            for _ in range(duration):
-                if not available:
-                    break
-                best_h = min(available, key=lambda h: hour_score[h])
-                chosen_hours.append(best_h)
-                available.remove(best_h)
-        else:
-            # fixed: pick best continuous block of length 'duration'
-            duration = min(duration, len(window_hours))
-            best_block = None
-            best_block_score = None
-            for i in range(0, len(window_hours) - duration + 1):
-                block = window_hours[i:i + duration]
-                block_score = sum(hour_score[h] for h in block)
-                if best_block_score is None or block_score < best_block_score:
-                    best_block_score = block_score
-                    best_block = block
-            if best_block is not None:
-                chosen_hours = best_block
-
-        for h in chosen_hours:
-            after_load[h] += participating_power
-        asset["after_hours"] = chosen_hours
-
-    cost_after_flex = 0.0
-    for asset in ASSETS:
-        if not asset.get("enabled", True):
-            continue
-        power_full = asset["power_kW"]
-        flex_factor = asset.get("flex_factor", 1.0)
-        participating_power = power_full * participation * flex_factor
-        remaining_power = power_full - participating_power
-        for h in asset["before_hours"]:
-            cost_after_flex += remaining_power * PRICE_PER_HOUR[h]
-        for h in asset["after_hours"]:
-            cost_after_flex += participating_power * PRICE_PER_HOUR[h]
+    """Run the model with the current slider settings."""
+    global result, before_load, after_load
+    result = simulate(ASSETS, flex_var.get() / 100.0, priority_var.get() / 100.0)
+    before_load = result.before_load
+    after_load = result.after_load
 
 
 # -------- UI --------
@@ -312,17 +103,20 @@ ttk.Label(stats_frame, textvariable=peak_before_var, style="StatValue.TLabel").g
 ttk.Label(stats_frame, text="Peak AFTER").grid(row=1, column=0, sticky="w", padx=(0, 10))
 ttk.Label(stats_frame, textvariable=peak_after_var, style="StatValue.TLabel").grid(row=1, column=1, sticky="w")
 ttk.Label(stats_frame, text="Peak reduction").grid(row=2, column=0, sticky="w", padx=(0, 10))
-ttk.Label(stats_frame, textvariable=reduction_var, style="Saving.TLabel").grid(row=2, column=1, sticky="w")
+reduction_label = ttk.Label(stats_frame, textvariable=reduction_var, style="Saving.TLabel")
+reduction_label.grid(row=2, column=1, sticky="w")
 ttk.Separator(stats_frame, orient="horizontal").grid(row=3, column=0, columnspan=2, sticky="ew", pady=2)
 ttk.Label(stats_frame, text="Cost BEFORE (flex assets)").grid(row=4, column=0, sticky="w", padx=(0, 10))
 ttk.Label(stats_frame, textvariable=cost_before_var, style="StatValue.TLabel").grid(row=4, column=1, sticky="w")
 ttk.Label(stats_frame, text="Cost AFTER (flex assets)").grid(row=5, column=0, sticky="w", padx=(0, 10))
 ttk.Label(stats_frame, textvariable=cost_after_var, style="StatValue.TLabel").grid(row=5, column=1, sticky="w")
 ttk.Label(stats_frame, text="Saving").grid(row=6, column=0, sticky="w", padx=(0, 10))
-ttk.Label(stats_frame, textvariable=saving_cost_var, style="Saving.TLabel").grid(row=6, column=1, sticky="w")
+saving_cost_label = ttk.Label(stats_frame, textvariable=saving_cost_var, style="Saving.TLabel")
+saving_cost_label.grid(row=6, column=1, sticky="w")
 ttk.Separator(stats_frame, orient="horizontal").grid(row=7, column=0, columnspan=2, sticky="ew", pady=2)
-ttk.Label(stats_frame, text="CO2 saving").grid(row=8, column=0, sticky="w", padx=(0, 10))
-ttk.Label(stats_frame, textvariable=co2_var, style="Saving.TLabel").grid(row=8, column=1, sticky="w")
+ttk.Label(stats_frame, text="CO2 saving (flex assets)").grid(row=8, column=0, sticky="w", padx=(0, 10))
+co2_label = ttk.Label(stats_frame, textvariable=co2_var, style="Saving.TLabel")
+co2_label.grid(row=8, column=1, sticky="w")
 
 # --- Add ---
 input_frame = ttk.LabelFrame(left_frame, text="Add flexible load")
@@ -369,42 +163,28 @@ entry_flex = ttk.Entry(input_frame, width=10)
 entry_flex.insert(0, "1.0")
 entry_flex.grid(row=8, column=1, sticky="w")
 
+
 def read_form_values():
     owner = entry_owner.get().strip() or "Custom house"
     appliance = entry_appliance.get().strip() or "Appliance"
-    power = float(entry_power.get())
-    duration = int(entry_duration.get())
-    start = int(entry_start.get())
-    end = int(entry_end.get())
-    flex_factor = float(entry_flex.get())
+    try:
+        power = float(entry_power.get())
+        duration = int(entry_duration.get())
+        start = int(entry_start.get())
+        end = int(entry_end.get())
+        flex_factor = float(entry_flex.get())
+    except ValueError:
+        raise ValueError("Power and flexibility must be numbers, duration and hours whole numbers")
 
-    if not (0 <= start < NUM_HOURS):
-        raise ValueError("Start hour must be between 0 and 23")
-    if not (0 <= end <= NUM_HOURS):
-        raise ValueError("End hour must be between 0 and 24")
-    if start == end:
-        raise ValueError("Start and end hour cannot be the same (empty window)")
-    if not (0.0 <= flex_factor <= 1.0):
-        raise ValueError("Flexibility must be between 0.0 and 1.0")
-    if power <= 0:
-        raise ValueError("Power must be positive")
-    if duration <= 0:
-        raise ValueError("Duration must be positive")
-    window_length = len(get_window_hours(start, end))
-    if duration > window_length:
-        raise ValueError(
-            f"Duration ({duration}h) exceeds window length ({window_length}h). "
-            f"Widen the start-end window or reduce the duration."
-        )
-
-    return {
+    asset = {
         "owner": owner, "appliance": appliance,
         "power_kW": power, "duration_h": duration,
         "start_hour": start, "end_hour": end,
         "variable": var_variable.get(), "enabled": var_enabled.get(),
         "flex_factor": flex_factor,
-        "before_hours": [], "after_hours": [],
     }
+    validate_asset(asset)
+    return asset
 
 
 def clear_form():
@@ -521,175 +301,78 @@ def apply_optimization_result(best_flex, best_priority):
 
 # ---- OPTIMIZER ----
 
-def _grid_search_minimize(objective_fn):
-    """Exhaustive 1% grid search over (flex%, priority%) minimizing objective_fn().
-    objective_fn() may return a scalar or a tuple - tuples are compared lex,
-    which lets callers add tiebreakers (e.g. minimize peak, then cost)."""
-    root.config(cursor="wait")
+def run_optimiser(objective):
+    """Grid search in the model (no slider changes while it runs)."""
+    root.config(cursor="watch")  # "wait" only exists on Windows
     root.update_idletasks()
     try:
-        best_flex = 0
-        best_priority = 0
-        best_obj = None
-        for flex in range(0, 101):
-            for priority in range(0, 101):
-                flex_var.set(flex)
-                priority_var.set(priority)
-                recalculate_schedules()
-                obj = objective_fn()
-                if best_obj is None or obj < best_obj:
-                    best_obj = obj
-                    best_flex = flex
-                    best_priority = priority
-        return best_flex, best_priority, best_obj
+        return optimise(ASSETS, objective)
     finally:
         root.config(cursor="")
 
 
+def _change(pct):
+    """'12.3% lower' or '4.5% higher' from a saving percentage."""
+    return f"{abs(pct):.1f}% {'lower' if pct >= 0 else 'higher'}"
+
+
+def _summary(r, flex, priority):
+    return (f"Peak: {r.peak_before:.1f} -> {r.peak_after:.1f} kW ({_change(r.peak_reduction_pct)})\n"
+            f"Cost: {r.cost_before:.2f} -> {r.cost_after:.2f} EUR ({_change(r.cost_saving_pct)})\n"
+            f"CO2: {r.co2_before:.1f} -> {r.co2_after:.1f} kg/day ({_change(r.co2_saving_pct)})\n"
+            f"Flex: {flex}% | Grid/Price: {100-priority}%/{priority}%\n"
+            f"Cost and CO2 cover the flexible loads only.")
+
+
 def find_optimal_settings_fast():
-    """Minimize peak demand. Ties are broken by cost so we don't gratuitously
-    pick an expensive schedule when a cheaper one achieves the same peak."""
-    best_flex, best_priority, best_obj = _grid_search_minimize(
-        lambda: (max(after_load), cost_after_flex)
-    )
-    best_peak = best_obj[0]
-    apply_optimization_result(best_flex, best_priority)
-    peak_before = max(before_load)
-    reduction_pct = (peak_before - best_peak) / peak_before * 100 if peak_before > 0 else 0.0
-    messagebox.showinfo(
-        "Peak optimization",
-        f"Best peak: {best_peak:.1f} units (was {peak_before:.1f} units)\n"
-        f"Peak reduction: {reduction_pct:.1f}%\n"
-        f"Flex: {best_flex}% | Grid/Price: {100-best_priority}%/{best_priority}%"
-    )
+    """Minimize peak demand, ties broken by cost."""
+    flex, priority, r = run_optimiser("peak")
+    apply_optimization_result(flex, priority)
+    messagebox.showinfo("Peak optimization", _summary(r, flex, priority))
 
 
 def find_optimal_settings_cost():
-    """Minimize total daily electricity cost. Ties broken by peak."""
-    best_flex, best_priority, best_obj = _grid_search_minimize(
-        lambda: (cost_after_flex, max(after_load))
-    )
-    best_cost = best_obj[0]
-    apply_optimization_result(best_flex, best_priority)
-    cost_before_eur = cost_before_flex / 100.0
-    cost_after_eur = best_cost / 100.0
-    saving_pct = (cost_before_eur - cost_after_eur) / cost_before_eur * 100 if cost_before_eur > 0 else 0.0
-    messagebox.showinfo(
-        "Cost optimization",
-        f"Best cost: {cost_after_eur:.2f} EUR (was {cost_before_eur:.2f} EUR)\n"
-        f"Saving: {saving_pct:.1f}%\n"
-        f"Flex: {best_flex}% | Grid/Price: {100-best_priority}%/{best_priority}%"
-    )
+    """Minimize the daily cost of the flexible loads, ties broken by peak."""
+    flex, priority, r = run_optimiser("cost")
+    apply_optimization_result(flex, priority)
+    messagebox.showinfo("Cost optimization", _summary(r, flex, priority))
 
 
 def find_optimal_settings_co2():
-    """Minimize total daily CO2 emissions. Ties broken by cost."""
-    best_flex, best_priority, best_obj = _grid_search_minimize(
-        lambda: (sum(after_load[h] * CO2_PER_HOUR[h] for h in range(NUM_HOURS)),
-                 cost_after_flex)
-    )
-    best_co2 = best_obj[0]
-    apply_optimization_result(best_flex, best_priority)
-    co2_before = sum(before_load[h] * CO2_PER_HOUR[h] for h in range(NUM_HOURS))
-    reduction_pct = (co2_before - best_co2) / co2_before * 100 if co2_before > 0 else 0.0
-    messagebox.showinfo(
-        "CO2 optimization",
-        f"Best CO2: {best_co2:.1f} kg/day (was {co2_before:.1f} kg/day)\n"
-        f"Reduction: {reduction_pct:.1f}%\n"
-        f"Flex: {best_flex}% | Grid/Price: {100-best_priority}%/{best_priority}%"
-    )
+    """Minimize the daily CO2 of the flexible loads, ties broken by cost."""
+    flex, priority, r = run_optimiser("co2")
+    apply_optimization_result(flex, priority)
+    messagebox.showinfo("CO2 optimization", _summary(r, flex, priority))
 
 
 def find_optimal_settings_multi():
     """
-    Find (flex, priority) where every metric with a positive baseline (peak,
-    cost, CO2) improves compared to naive, then minimize their average.
+    Find the (flex, priority) where peak, cost and CO2 all improve on the
+    uncoordinated schedule, and their average (each scaled so 1.0 = no
+    improvement) is lowest. Settings where any of them gets worse are
+    rejected: an equal-weighted average would otherwise accept a cost
+    increase for a large peak cut.
 
-    Each active metric is normalized so 1.0 = naive baseline. Schedules
-    where any active metric exceeds 1.0 are rejected (return inf). Without
-    this filter, an equal-weighted average will gladly trade a 0.2% cost
-    rise for a 29% peak reduction, contradicting the "everyone wins" pitch.
-
-    Metrics with zero baseline (cost when no flex assets are enabled) are
-    excluded - we don't fabricate improvement on them by computing 0/1=0
-    and pretending that's a 100% saving.
-
-    If no schedule improves all active metrics, the user's slider position
-    is left untouched: clobbering it with (0, 0) just to print a "no
-    improvement" message is worse than doing nothing.
+    If no setting improves all of them, the sliders are left where they are.
     """
-    recalculate_schedules()
-    peak_norm = max(before_load)
-    cost_norm = cost_before_flex
-    co2_norm = sum(before_load[h] * CO2_PER_HOUR[h] for h in range(NUM_HOURS))
-
-    active = []
-    if peak_norm > 0:
-        active.append("peak")
-    if cost_norm > 0:
-        active.append("cost")
-    if co2_norm > 0:
-        active.append("co2")
-
-    if not active:
+    out = run_optimiser("all")
+    if out is None:
         messagebox.showinfo(
             "Multi-objective optimization",
-            "Nothing to optimize: no enabled flexible loads with positive baseline."
-        )
-        return
-
-    eps = 1e-6
-
-    def objective():
-        parts = []
-        if "peak" in active:
-            v = max(after_load) / peak_norm
-            if v > 1.0 + eps:
-                return float("inf")
-            parts.append(v)
-        if "cost" in active:
-            v = cost_after_flex / cost_norm
-            if v > 1.0 + eps:
-                return float("inf")
-            parts.append(v)
-        if "co2" in active:
-            v = sum(after_load[h] * CO2_PER_HOUR[h] for h in range(NUM_HOURS)) / co2_norm
-            if v > 1.0 + eps:
-                return float("inf")
-            parts.append(v)
-        return sum(parts) / len(parts)
-
-    best_flex, best_priority, best_obj = _grid_search_minimize(objective)
-
-    if best_obj is None or best_obj >= 1.0 - 1e-9:
-        messagebox.showinfo(
-            "Multi-objective optimization",
-            f"No (flex, priority) setting improves all "
-            f"{len(active)} active metrics at once.\n"
+            "No (flex, priority) setting improves peak, cost and CO2 at once.\n"
             "Asset windows may be too tight to give the scheduler room to move.\n"
             "Try 'Optimize peak' or 'Optimize cost' for single-metric tuning."
         )
         return
-
-    apply_optimization_result(best_flex, best_priority)
-    # Globals now reflect the best (flex, priority); compute the breakdown.
-    peak_pct = (peak_norm - max(after_load)) / peak_norm * 100 if peak_norm > 0 else 0.0
-    cost_pct = (cost_before_flex - cost_after_flex) / cost_before_flex * 100 if cost_before_flex > 0 else 0.0
-    co2_after = sum(after_load[h] * CO2_PER_HOUR[h] for h in range(NUM_HOURS))
-    co2_pct = (co2_norm - co2_after) / co2_norm * 100 if co2_norm > 0 else 0.0
-
-    messagebox.showinfo(
-        "Multi-objective optimization",
-        f"Combined score: {best_obj:.3f} (1.000 = no flex improvement)\n"
-        f"Reductions - Peak: {peak_pct:.1f}% | Cost: {cost_pct:.1f}% | CO2: {co2_pct:.1f}%\n"
-        f"Flex: {best_flex}% | Grid/Price: {100-best_priority}%/{best_priority}%"
-    )
+    flex, priority, r = out
+    apply_optimization_result(flex, priority)
+    messagebox.showinfo("Multi-objective optimization", _summary(r, flex, priority))
 
 
 def reset_to_defaults():
     """Restore ASSETS list, sliders, and the input form to startup state."""
     ASSETS.clear()
-    ASSETS.extend(copy.deepcopy(DEFAULT_ASSETS))
+    ASSETS.extend(default_assets())
     flex_var.set(100.0)
     priority_var.set(50.0)
     flex_value_label.config(text="Flexible users: 100%")
@@ -780,11 +463,13 @@ def _canvas_size(canvas):
 
 
 def get_y_scaling_params():
-    """Y-axis upper bound rounded up to the next multiple of 25."""
+    """Y-axis upper bound and tick step in kW. Steps of 25, or 50 once the
+    peak passes 350 kW, so the labels do not crowd."""
     max_val_data = max(max(before_load), max(after_load))
+    step = 25 if max_val_data <= 350 else 50
     if max_val_data <= 0:
-        return 25
-    return max(25, 25 * math.ceil(max_val_data / 25.0))
+        return step, step
+    return max(step, step * math.ceil(max_val_data / step)), step
 
 
 def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
@@ -795,11 +480,11 @@ def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
     if usable_height <= 0:
         return
 
-    max_tick = get_y_scaling_params()
+    max_tick, step = get_y_scaling_params()
     x_span = w - 2 * margin
     x_step = x_span / 24.0
 
-    for y_val in range(25, max_tick + 1, 25):
+    for y_val in range(step, max_tick + 1, step):
         y = h - margin - (y_val / max_tick) * usable_height
         canvas.create_line(margin, y, w - margin, y, fill=COLOR_GRID)
 
@@ -812,7 +497,7 @@ def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
         canvas.create_line(x, h - margin, x, h - margin + 5)
         canvas.create_text(x, h - margin + 15, text=str(hour_label), font=(APP_FONT, 8))
 
-    for y_val in range(0, max_tick + 1, 25):
+    for y_val in range(0, max_tick + 1, step):
         y = h - margin - (y_val / max_tick) * usable_height
         canvas.create_line(margin - 5, y, margin, y)
         canvas.create_text(margin - 30, y, text=str(y_val), font=(APP_FONT, 8))
@@ -835,11 +520,11 @@ def draw_combined_graph():
     if usable_height <= 0:
         return
 
-    max_tick = get_y_scaling_params()
+    max_tick, step = get_y_scaling_params()
     x_span = w - 2 * margin
     x_step = x_span / 24.0
 
-    for y_val in range(25, max_tick + 1, 25):
+    for y_val in range(step, max_tick + 1, step):
         y = h - margin - (y_val / max_tick) * usable_height
         canvas.create_line(margin, y, w - margin, y, fill=COLOR_GRID)
 
@@ -852,7 +537,7 @@ def draw_combined_graph():
         canvas.create_line(x, h - margin, x, h - margin + 5)
         canvas.create_text(x, h - margin + 15, text=str(hour_label), font=(APP_FONT, 8))
 
-    for y_val in range(0, max_tick + 1, 25):
+    for y_val in range(0, max_tick + 1, step):
         y = h - margin - (y_val / max_tick) * usable_height
         canvas.create_line(margin - 5, y, margin, y)
         canvas.create_text(margin - 30, y, text=str(y_val), font=(APP_FONT, 8))
@@ -934,52 +619,33 @@ def draw_price_graph():
 
 def draw_graphs():
     draw_single_graph(canvas_before, before_load,
-                      "Total demand BEFORE flexibility", COLOR_BEFORE_LINE)
+                      "Total demand BEFORE flexibility (kW)", COLOR_BEFORE_LINE)
     draw_single_graph(canvas_after, after_load,
-                      "Total demand AFTER flexibility", COLOR_AFTER_LINE)
+                      "Total demand AFTER flexibility (kW)", COLOR_AFTER_LINE)
     draw_combined_graph()
     draw_price_graph()
 
 
 def update_stats_and_graph():
-    peak_b = max(before_load)
-    peak_a = max(after_load)
-    reduction = peak_b - peak_a
-    reduction_pct = (reduction / peak_b * 100) if peak_b > 0 else 0.0
+    r = result
+    peak_before_var.set(f"{r.peak_before:.1f} kW")
+    peak_after_var.set(f"{r.peak_after:.1f} kW")
+    reduction_var.set(f"{r.peak_before - r.peak_after:.1f} kW ({r.peak_reduction_pct:.1f}%)")
 
-    peak_before_var.set(f"{peak_b:.1f} units")
-    peak_after_var.set(f"{peak_a:.1f} units")
-    reduction_var.set(f"{reduction:.1f} units ({reduction_pct:.1f}%)")
+    cost_before_var.set(f"{r.cost_before:.2f} EUR")
+    cost_after_var.set(f"{r.cost_after:.2f} EUR")
+    saving_cost_var.set(f"{r.cost_before - r.cost_after:.2f} EUR ({r.cost_saving_pct:.1f}%)")
 
-    cost_b_eur = cost_before_flex / 100.0
-    cost_a_eur = cost_after_flex / 100.0
-    saving_eur = cost_b_eur - cost_a_eur
-    saving_pct = (saving_eur / cost_b_eur * 100) if cost_b_eur > 0 else 0.0
+    # Same basis as cost: the flexible loads only, so the two percentages are
+    # comparable. The base load cannot move, so including it would only dilute
+    # the saving. One modelled day is not extrapolated to a year.
+    co2_var.set(f"{r.co2_before - r.co2_after:.1f} kg/day ({r.co2_saving_pct:.1f}%)")
 
-    cost_before_var.set(f"{cost_b_eur:.2f} EUR")
-    cost_after_var.set(f"{cost_a_eur:.2f} EUR")
-    saving_cost_var.set(f"{saving_eur:.2f} EUR ({saving_pct:.1f}%)")
-
-    # CO2_PER_HOUR is in kg/kWh; load is in kW; 1h interval -> emissions in kg.
-    # Saving % is over asset-only emissions so it's comparable to cost % (also
-    # asset-only). Using city-total emissions as the denominator would dilute
-    # the saving with the un-shiftable BASE_LOAD portion and understate it.
-    asset_emissions_before = sum(
-        (before_load[h] - BASE_LOAD[h]) * CO2_PER_HOUR[h] for h in range(NUM_HOURS)
-    )
-    asset_emissions_after = sum(
-        (after_load[h] - BASE_LOAD[h]) * CO2_PER_HOUR[h] for h in range(NUM_HOURS)
-    )
-    saving_kg_day = asset_emissions_before - asset_emissions_after
-    saving_pct_co2 = (
-        saving_kg_day / asset_emissions_before * 100
-        if asset_emissions_before > 0 else 0.0
-    )
-    saving_t_year = saving_kg_day * 365.0 / 1000.0
-    co2_var.set(
-        f"{saving_kg_day:.1f} kg/day ({saving_pct_co2:.1f}%) "
-        f"~ {saving_t_year:.1f} tCO2/year"
-    )
+    # green when the metric improves, red when it gets worse
+    for label, pct in ((reduction_label, r.peak_reduction_pct),
+                       (saving_cost_label, r.cost_saving_pct),
+                       (co2_label, r.co2_saving_pct)):
+        label.configure(style="Saving.TLabel" if pct >= 0 else "Loss.TLabel")
 
     draw_graphs()
 
@@ -1000,4 +666,5 @@ for c in (canvas_before, canvas_after, canvas_combined, canvas_price):
 recalculate_schedules()
 update_stats_and_graph()
 
-root.mainloop()
+if __name__ == "__main__":
+    root.mainloop()
