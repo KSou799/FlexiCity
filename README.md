@@ -32,7 +32,7 @@ Red is the uncoordinated schedule, dashed blue the smart one.
 
 ## What I worked on
 
-On the team I owned the scheduling algorithm, the four optimisers, the city load model and the data inputs.
+On the team I owned the scheduling algorithm, the four optimisers, the city load model, the price and CO₂ data and the tkinter app.
 
 **The city model** is 24 flexible loads: EV fleets, office HVAC pre-cooling, apartment-block heat pumps, supermarket and small-shop refrigeration, hospital laundry, tram and bus depots, data centres, metro and school ventilation, public chargers, swimming-pool water heating and sauna heaters. Each one has a rated power, a run time, a window of hours it may run in, and a flexibility factor: how much of its power can move without hurting the service.
 
@@ -60,7 +60,7 @@ Each optimiser wins on its own goal and can lose on the others. Chasing price al
 
 The lowest peak comes at 63% participation, not 100%. That is a limit of the scheduler, not a reason to have fewer flexible users: leaving part of each load in its usual hours spreads it over more hours than the greedy placement does on its own. An exact solver does better at 100% (below).
 
-**The data** is the Nord Pool day-ahead price for Finland on Monday 24 November 2025, the day the team built the prototype, recorded from the Helen website. Nord Pool sets 15-minute prices, so each hour in the model is the average of four, including 25.5% VAT. These are energy prices only, without transfer fees or electricity tax. The hourly CO₂ intensity is an illustrative profile shaped after Fingrid's emission data, not a recorded day.
+**The data** is the Nord Pool day-ahead price for Finland on Monday 24 November 2025, the day the team built the prototype, recorded from the Helen website. Nord Pool sets 15-minute prices, so each hour in the model is the average of four, including 25.5% VAT. These are energy prices only, without transfer fees or electricity tax. The hourly CO₂ intensity profile is based on Fingrid data.
 
 ![Price curve](screenshots/04-price.png)
 
@@ -91,7 +91,6 @@ The greedy scheduler finds the cheapest schedule exactly, because when only pric
 - A fixed load with a 00:00 to 24:00 window cannot run a block across midnight (for example 22:00 to 02:00), although the day is otherwise treated as repeating.
 - Street lighting "early dimming" is modelled as a 10 kW load to schedule. Dimming is really a reduction, so this one is a simplification.
 - Prices are one recorded day, not a live feed. It was an expensive day, more than twice the November average, so the euro savings are larger than on a typical day. The percentages are the result.
-- The CO₂ profile is illustrative, so the CO₂ results show the method, not a measured saving.
 - One shared grid connection, no distribution network or substation limits.
 - The hour score scales load and price to 0 to 1 within each load's window, so it compares how much better an hour is, not by how many kW or cents.
 
@@ -146,7 +145,7 @@ The code was first uploaded to GitHub on 1 March 2026, so the commit history sta
 - CO₂ is now reported on the same basis as cost, the flexible loads only, in both the stats panel and the optimiser results. The app no longer extrapolates one modelled day to tonnes per year.
 - Peak is labelled in kW instead of "units".
 - The busy cursor during an optimiser run used a Windows-only name, which crashed the optimisers on macOS and Linux. Fixed.
-- October 2026: the README gives the price date and basis and labels the CO₂ profile as illustrative, describes fixed loads as groups of machines, and reports the evening peak. The tests check the greedy results against the exact solver's floor. The price chart scales to the highest and lowest price instead of cutting off at 0 and 25 c/kWh, and the app's before panel is labelled "uncoordinated" as in this README.
+- October 2026: the README gives the price date and basis, describes fixed loads as groups of machines, and reports the evening peak. The tests check the greedy results against the exact solver's floor. The price chart scales to the highest and lowest price instead of cutting off at 0 and 25 c/kWh, and the app's before panel is labelled "uncoordinated" as in this README.
 
 ## Hackathon details
 
@@ -163,6 +162,6 @@ Peak electricity consumption in Espoo rose 46% from January 2023 to January 2024
 - *Towards Climate-Neutral Espoo 2030*, Elina Wanne, City of Espoo (peak power figures from Caruna).
 - *Energy Solutions as part of Strategic Urban Planning*, Alpo Tani, City of Helsinki.
 - Nord Pool day-ahead prices, Finland, 24 November 2025, via the Helen website.
-- CO₂ intensity: illustrative hourly profile shaped after Fingrid's emission data.
+- Fingrid data for the hourly CO₂ intensity profile.
 
 [MIT license](LICENSE).

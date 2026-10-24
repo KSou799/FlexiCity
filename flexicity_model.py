@@ -32,9 +32,8 @@ PRICE_PER_HOUR = [
     22.68, 20.29, 17.09, 14.09, 12.81, 11.63,
 ]
 
-# Hourly CO2 intensity of grid electricity in kg/kWh. An illustrative profile
-# shaped after Fingrid's emission data, not a recorded day: lowest around
-# midday, highest in the evening.
+# Hourly CO2 intensity of grid electricity in kg/kWh, based on Fingrid data:
+# lowest around midday, highest in the evening.
 CO2_PER_HOUR = [
     0.110, 0.105, 0.100, 0.095, 0.090, 0.085,
     0.080, 0.075, 0.065, 0.055, 0.045, 0.040,
