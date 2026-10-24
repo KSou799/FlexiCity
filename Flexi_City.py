@@ -405,7 +405,7 @@ ttk.Button(left_frame, text="Reset to defaults",
     .grid(row=5, column=0, sticky="ew", pady=(5, 0))
 
 # --- Graphs ---
-before_frame = ttk.LabelFrame(right_frame, text="Before - dumb scheduling")
+before_frame = ttk.LabelFrame(right_frame, text="Before - uncoordinated")
 before_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 5))
 
 after_frame = ttk.LabelFrame(right_frame, text="After - smart scheduling")
@@ -472,20 +472,27 @@ def get_y_scaling_params():
     return max(step, step * math.ceil(max_val_data / step)), step
 
 
-def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
+def _draw_axes(canvas, title, y_min, y_max, step, y_label_anchor="center"):
+    """Clear the canvas and draw what all four charts share: grid, axes,
+    title, hour ticks 0 to 24 and value ticks from y_min to y_max.
+
+    Returns a function that turns (hour index 0 to 24, value) into canvas
+    x, y, or None when the canvas is too small to draw on.
+    """
     canvas.delete("all")
     w, h = _canvas_size(canvas)
     margin = 40
     usable_height = h - 2 * margin
     if usable_height <= 0:
-        return
+        return None
+    x_step = (w - 2 * margin) / 24.0
 
-    max_tick, step = get_y_scaling_params()
-    x_span = w - 2 * margin
-    x_step = x_span / 24.0
+    def to_xy(k, val):
+        return (margin + k * x_step,
+                h - margin - ((val - y_min) / (y_max - y_min)) * usable_height)
 
-    for y_val in range(step, max_tick + 1, step):
-        y = h - margin - (y_val / max_tick) * usable_height
+    for y_val in range(y_min + step, y_max + 1, step):
+        y = to_xy(0, y_val)[1]
         canvas.create_line(margin, y, w - margin, y, fill=COLOR_GRID)
 
     canvas.create_line(margin, h - margin, w - margin, h - margin)
@@ -497,64 +504,47 @@ def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
         canvas.create_line(x, h - margin, x, h - margin + 5)
         canvas.create_text(x, h - margin + 15, text=str(hour_label), font=(APP_FONT, 8))
 
-    for y_val in range(0, max_tick + 1, step):
-        y = h - margin - (y_val / max_tick) * usable_height
+    for y_val in range(y_min, y_max + 1, step):
+        y = to_xy(0, y_val)[1]
         canvas.create_line(margin - 5, y, margin, y)
-        canvas.create_text(margin - 30, y, text=str(y_val), font=(APP_FONT, 8))
+        if y_label_anchor == "e":
+            canvas.create_text(margin - 10, y, text=str(y_val),
+                               font=(APP_FONT, 8), anchor="e")
+        else:
+            canvas.create_text(margin - 30, y, text=str(y_val), font=(APP_FONT, 8))
 
+    return to_xy
+
+
+def _hourly_points(to_xy, values):
+    """Canvas points for 24 hourly values, with hour 24 repeating hour 0."""
     pts = []
     for k in range(0, 25):
-        idx = k % NUM_HOURS
-        x = margin + k * x_step
-        y = h - margin - (load[idx] / max_tick) * usable_height
-        pts.extend([x, y])
-    canvas.create_line(*pts, fill=line_color, width=2)
+        pts.extend(to_xy(k, values[k % NUM_HOURS]))
+    return pts
+
+
+def draw_single_graph(canvas, load, title, line_color=COLOR_BEFORE_LINE):
+    max_tick, step = get_y_scaling_params()
+    to_xy = _draw_axes(canvas, title, 0, max_tick, step)
+    if to_xy is None:
+        return
+    canvas.create_line(*_hourly_points(to_xy, load), fill=line_color, width=2)
 
 
 def draw_combined_graph():
     canvas = canvas_combined
-    canvas.delete("all")
-    w, h = _canvas_size(canvas)
-    margin = 40
-    usable_height = h - 2 * margin
-    if usable_height <= 0:
+    max_tick, step = get_y_scaling_params()
+    to_xy = _draw_axes(canvas, "Comparison", 0, max_tick, step)
+    if to_xy is None:
         return
 
-    max_tick, step = get_y_scaling_params()
-    x_span = w - 2 * margin
-    x_step = x_span / 24.0
+    canvas.create_line(*_hourly_points(to_xy, before_load), fill=COLOR_BEFORE_LINE, width=2)
+    canvas.create_line(*_hourly_points(to_xy, after_load), fill=COLOR_AFTER_LINE, width=2,
+                       dash=(4, 2))
 
-    for y_val in range(step, max_tick + 1, step):
-        y = h - margin - (y_val / max_tick) * usable_height
-        canvas.create_line(margin, y, w - margin, y, fill=COLOR_GRID)
-
-    canvas.create_line(margin, h - margin, w - margin, h - margin)
-    canvas.create_line(margin, margin, margin, h - margin)
-    canvas.create_text(w / 2, margin / 2, text="Comparison", font=(APP_FONT, 11, "bold"))
-
-    for hour_label in range(0, 25):
-        x = margin + hour_label * x_step
-        canvas.create_line(x, h - margin, x, h - margin + 5)
-        canvas.create_text(x, h - margin + 15, text=str(hour_label), font=(APP_FONT, 8))
-
-    for y_val in range(0, max_tick + 1, step):
-        y = h - margin - (y_val / max_tick) * usable_height
-        canvas.create_line(margin - 5, y, margin, y)
-        canvas.create_text(margin - 30, y, text=str(y_val), font=(APP_FONT, 8))
-
-    def to_pts(load):
-        pts = []
-        for k in range(0, 25):
-            idx = k % NUM_HOURS
-            x = margin + k * x_step
-            y = h - margin - (load[idx] / max_tick) * usable_height
-            pts.extend([x, y])
-        return pts
-
-    canvas.create_line(*to_pts(before_load), fill=COLOR_BEFORE_LINE, width=2)
-    canvas.create_line(*to_pts(after_load), fill=COLOR_AFTER_LINE, width=2, dash=(4, 2))
-
-    legend_y1 = margin / 2
+    w, _ = _canvas_size(canvas)
+    legend_y1 = 40 / 2
     legend_y2 = legend_y1 + 20
     legend_x_line = w - 200
     legend_x_text = legend_x_line + 40
@@ -570,51 +560,17 @@ def draw_combined_graph():
 
 
 def draw_price_graph():
-    canvas = canvas_price
-    canvas.delete("all")
-    w, h = _canvas_size(canvas)
-    margin = 40
-    usable_height = h - 2 * margin
-    if usable_height <= 0:
+    """Price axis in steps of 5 c/kWh: 0 to 25 for this day, wider if the
+    prices are higher or negative, so no price is cut off."""
+    step = 5
+    y_min = min(0, step * math.floor(min(PRICE_PER_HOUR) / step))
+    y_max = max(25, step * math.ceil(max(PRICE_PER_HOUR) / step))
+    to_xy = _draw_axes(canvas_price, "Price (cents/kWh)", y_min, y_max, step,
+                       y_label_anchor="e")
+    if to_xy is None:
         return
-
-    min_price_scale = 0.0
-    max_price_scale = 25.0
-    price_range = max_price_scale - min_price_scale
-    x_span = w - 2 * margin
-    x_step = x_span / 24.0
-
-    for price_val in range(5, 26, 5):
-        frac = (price_val - min_price_scale) / price_range
-        y = h - margin - frac * usable_height
-        canvas.create_line(margin, y, w - margin, y, fill=COLOR_GRID)
-
-    canvas.create_line(margin, h - margin, w - margin, h - margin)
-    canvas.create_line(margin, margin, margin, h - margin)
-    canvas.create_text(w / 2, margin / 2, text="Price (cents/kWh)",
-                       font=(APP_FONT, 11, "bold"))
-
-    for hour_label in range(0, 25):
-        x = margin + hour_label * x_step
-        canvas.create_line(x, h - margin, x, h - margin + 5)
-        canvas.create_text(x, h - margin + 15, text=str(hour_label), font=(APP_FONT, 8))
-
-    for price_val in range(0, 26, 5):
-        frac = (price_val - min_price_scale) / price_range
-        y = h - margin - frac * usable_height
-        canvas.create_line(margin - 5, y, margin, y)
-        canvas.create_text(margin - 10, y, text=str(price_val),
-                           font=(APP_FONT, 8), anchor="e")
-
-    pts_price = []
-    for k in range(0, 25):
-        idx = k % NUM_HOURS
-        pv = max(min_price_scale, min(max_price_scale, PRICE_PER_HOUR[idx]))
-        norm = (pv - min_price_scale) / price_range
-        x = margin + k * x_step
-        y = h - margin - norm * usable_height
-        pts_price.extend([x, y])
-    canvas.create_line(*pts_price, fill=COLOR_PRICE_LINE, width=2)
+    canvas_price.create_line(*_hourly_points(to_xy, PRICE_PER_HOUR),
+                             fill=COLOR_PRICE_LINE, width=2)
 
 
 def draw_graphs():

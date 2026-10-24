@@ -21,8 +21,10 @@ from dataclasses import dataclass, field
 
 NUM_HOURS = 24
 
-# Hourly spot price in c/kWh: Nord Pool prices for the Helsinki area,
-# recorded from the Helen website for one day in November 2025.
+# Hourly spot price in c/kWh: Nord Pool day-ahead prices for Finland on
+# Monday 24 November 2025, recorded from the Helen website. Each hour is the
+# average of the four 15-minute prices, including 25.5% VAT. Energy only,
+# no transfer fees or electricity tax.
 PRICE_PER_HOUR = [
     8.70, 8.48, 8.52, 8.61, 8.69, 8.69,
     9.56, 11.58, 12.72, 13.07, 15.65, 17.65,
@@ -30,8 +32,9 @@ PRICE_PER_HOUR = [
     22.68, 20.29, 17.09, 14.09, 12.81, 11.63,
 ]
 
-# Hourly CO2 intensity of grid electricity in kg/kWh, based on Fingrid data:
-# lowest around midday, highest in the evening.
+# Hourly CO2 intensity of grid electricity in kg/kWh. An illustrative profile
+# shaped after Fingrid's emission data, not a recorded day: lowest around
+# midday, highest in the evening.
 CO2_PER_HOUR = [
     0.110, 0.105, 0.100, 0.095, 0.090, 0.085,
     0.080, 0.075, 0.065, 0.055, 0.045, 0.040,
@@ -64,6 +67,10 @@ BASE_LOAD = generate_base_load()
 #   variable      True if the run time can be split into separate hours
 #                 (EV charging), False if it must run in one block (an oven)
 #   flex_factor   share of the power that can be shifted without hurting service
+#
+# A fixed (variable=False) load stands for a group of identical machines.
+# The share that moves (power * participation * flex_factor) runs as one block
+# in its new hours, and the rest keeps its usual hours.
 #   usual_start   optional: the hour the load starts without coordination,
 #                 when that is later than the window opening. The heat pumps
 #                 normally start at 05:00 but may pre-heat from 02:00.
@@ -238,10 +245,12 @@ def simulate(assets, participation, price_weight, max_passes=MAX_PASSES, prep=No
     AFTER:  each load's moved power (power * participation * flex_factor) is
             placed in the hours with the lowest score inside its window,
             score = (1 - w) * load + w * price, both scaled 0 to 1 within the
-            window. Loads are placed largest first, against the demand curve
-            as it stands at that moment. The placement is repeated until no
-            load moves (at most max_passes times), because in the first pass
-            big loads avoid hours that smaller loads have not left yet.
+            window. A fixed load's moved power goes into one continuous
+            block, the rest stays in its usual hours. Loads are placed
+            largest first, against the demand curve as it stands at that
+            moment. The placement is repeated until no load moves (at most
+            max_passes times), because in the first pass big loads avoid
+            hours that smaller loads have not left yet.
     """
     if prep is None:
         prep = prepare(assets)

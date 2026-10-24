@@ -13,5 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install PuLP for the exact-solver checks
+        run: pip install "pulp>=2.7,<3"
       - name: Run the model tests
         run: python -m unittest -v
